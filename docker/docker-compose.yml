@@ -1,0 +1,22 @@
+# run this with docker-compose -f docker/docker-compose.yml run test
+services:
+  common: &common
+    container_name: StorageLiteApi
+    build: .
+    volumes:
+      - ..:/working
+    working_dir: /working
+
+  test:
+    <<: *common
+    container_name: StorageLiteApiTest
+    build: .
+    volumes:
+      - ..:/working
+    working_dir: /working
+    command: /bin/bash -xcl "swift test"
+
+  shell:
+    <<: *common
+    container_name: StorageLiteApiShell
+    entrypoint: /bin/bash
