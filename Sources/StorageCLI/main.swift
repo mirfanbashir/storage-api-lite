@@ -1,6 +1,10 @@
 import Foundation
 import StorageApiLite
 
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
 @main
 struct StorageCLI {
     static func main() async {
@@ -21,6 +25,10 @@ struct StorageCLI {
             switch operation {
             case .upload:
                 try await cli.runUploadTest()
+            case .uploadWithPresignedURL:
+                try await cli.runUploadWithPresignedURLTest()
+            case .diagnose:
+                try await cli.runDiagnostics()
             case .help:
                 printUsage() // This won't be reached due to early return above
             }
@@ -32,6 +40,8 @@ struct StorageCLI {
     
     enum Operation {
         case upload
+        case uploadWithPresignedURL
+        case diagnose
         case help
     }
     
@@ -43,6 +53,10 @@ struct StorageCLI {
             switch arg.lowercased() {
             case "upload", "--upload":
                 return .upload
+            case "upload-with-presigned-url", "--upload-with-presigned-url":
+                return .uploadWithPresignedURL
+            case "diagnose", "--diagnose":
+                return .diagnose
             case "help", "--help", "-h":
                 return .help
             default:
@@ -62,6 +76,8 @@ struct StorageCLI {
         print("")
         print("OPERATIONS:")
         print("  upload                    Test file upload operation")
+        print("  upload-with-presigned-url  Test file upload operation with presigned URL")
+        print("  diagnose                  Run comprehensive diagnostics")
         print("  help, --help, -h         Show this help message")
         print("")
         print("EXAMPLES:")
@@ -196,6 +212,65 @@ struct StorageClientTester {
         } catch let error as StorageError {
             print("     ❌ Upload failed with StorageError: \(error)")
             throw error
+        }
+    }
+
+    func runUploadWithPresignedURLTest() async throws {
+        print("🚀 Testing Upload with Presigned URL Operation")
+        print("📦 Provider: \(try EnvironmentConfig.load().provider)")
+        print("🪣 Target Bucket: \(testBucket)")
+        print("🔑 Test Key: \(testKey)")
+        print("")
+        
+        // Generate presigned URL for upload
+        print("  🔗 Generating presigned URL for upload...")
+        let presignedURL = try await client.generatePresignedURL(
+            key: testKey,
+            bucket: testBucket,
+            operation: .write,
+            expirationTime: 100 // 1 minute
+        )
+        print("     ✅ Presigned URL generated successfully!")
+        print("     🔗 URL: \(presignedURL)")
+        
+        // Perform upload using the presigned URL
+        print("  ⬆️  Uploading file using presigned URL...")
+        
+        var request = URLRequest(url: presignedURL)
+        request.httpMethod = "PUT"
+        request.httpBody = testData
+        request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
+        request.setValue("\(testData.count)", forHTTPHeaderField: "Content-Length")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
+            print("     ✅ Upload completed successfully via presigned URL!")
+            print("     📊 Uploaded \(testData.count) bytes")
+            
+            // Verify the upload by checking if file exists
+            print("  🔍 Verifying upload...")
+            let exists = try await client.exists(key: testKey, bucket: testBucket)
+            if exists {
+                print("     ✅ File exists in storage")
+            } else {
+                print("     ❌ File not found in storage")
+            }
+            
+            try await client.delete(key: testKey, bucket: testBucket)
+            print("  🗑️  Cleaned up test file from storage")
+            
+            print("")
+            print("✅ Upload with presigned URL test completed successfully!")
+            print("💡 File '\(testKey)' has been uploaded to bucket '\(testBucket)'")
+            print("💡 Use other operations to download, delete, or list files")
+            
+        } else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let responseBody = String(data: data, encoding: .utf8) ?? "N/A"
+            print("     ❌ Upload failed with status code: \(statusCode)")
+            print("     Response body: \(responseBody)")
+            throw StorageError.requestFailed(statusCode: statusCode, message: "Presigned URL upload failed")
         }
     }
     

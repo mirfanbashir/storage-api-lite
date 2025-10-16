@@ -600,9 +600,114 @@ public class AWSS3Client: StorageClient {
         url: URL,
         expirationTime: Int
     ) throws -> String {
-        // This is a simplified version - in a full implementation,
-        // you'd need to implement presigned URL signature calculation
-        // For now, return a placeholder
-        return "placeholder-signature"
+        let date = Date()
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        dateFormatter.timeZone = TimeZone(abbreviation: "UTC")
+        let timestamp = dateFormatter.string(from: date)
+        
+        let shortDateFormatter = DateFormatter()
+        shortDateFormatter.dateFormat = "yyyyMMdd"
+        shortDateFormatter.timeZone = TimeZone(abbreviation: "UTC")
+        let dateStamp = shortDateFormatter.string(from: date)
+        
+        let credentialScope = "\(dateStamp)/\(configuration.region)/s3/aws4_request"
+        let credential = "\(configuration.accessKeyId)/\(credentialScope)"
+        
+        // Create the canonical request for presigned URL
+        let canonicalRequest = try createPresignedCanonicalRequest(
+            method: method,
+            url: url,
+            timestamp: timestamp,
+            credential: credential,
+            expirationTime: expirationTime
+        )
+        
+        // Create string to sign
+        let hashedCanonicalRequest = CrossPlatformCrypto.sha256Hash(data: canonicalRequest.data(using: .utf8)!)
+        let stringToSign = [
+            "AWS4-HMAC-SHA256",
+            timestamp,
+            credentialScope,
+            hashedCanonicalRequest
+        ].joined(separator: "\n")
+        
+        // Create signing key
+        let signingKey = createPresignedSigningKey(
+            secretKey: configuration.secretAccessKey,
+            dateStamp: dateStamp,
+            region: configuration.region
+        )
+        
+        // Calculate signature
+        let signature = CrossPlatformCrypto.hmacSHA256(data: stringToSign.data(using: .utf8)!, key: signingKey)
+            .map { String(format: "%02x", $0) }.joined()
+        
+        return signature
+    }
+    
+    private func createPresignedCanonicalRequest(
+        method: String,
+        url: URL,
+        timestamp: String,
+        credential: String,
+        expirationTime: Int
+    ) throws -> String {
+        // Build canonical URI
+        let canonicalURI: String
+        if url.path.isEmpty {
+            canonicalURI = "/"
+        } else {
+            // Split the path, encode each component, then rejoin
+            let pathComponents = url.path.split(separator: "/", omittingEmptySubsequences: false)
+            let encodedComponents = pathComponents.map { component in
+                String(component).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(component)
+            }
+            canonicalURI = "/" + encodedComponents.dropFirst().joined(separator: "/")
+        }
+        
+        // Build canonical query string for presigned URL
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems else {
+            throw StorageError.configurationError("Invalid URL for presigned signature")
+        }
+        
+        let canonicalQueryString = queryItems
+            .sorted { $0.name < $1.name }
+            .map { item in
+                let name = item.name.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? item.name
+                let value = item.value?.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
+                return "\(name)=\(value)"
+            }
+            .joined(separator: "&")
+        
+        // For presigned URLs, we only include the host header
+        let canonicalHeaders = "host:\(url.host ?? "")"
+        let signedHeaders = "host"
+        
+        // For presigned URLs, payload is always UNSIGNED-PAYLOAD
+        let payloadHash = "UNSIGNED-PAYLOAD"
+        
+        return [
+            method,
+            canonicalURI,
+            canonicalQueryString,
+            canonicalHeaders,
+            "",
+            signedHeaders,
+            payloadHash
+        ].joined(separator: "\n")
+    }
+    
+    private func createPresignedSigningKey(
+        secretKey: String,
+        dateStamp: String,
+        region: String
+    ) -> Data {
+        let kDate = CrossPlatformCrypto.hmacSHA256(data: dateStamp.data(using: .utf8)!, key: "AWS4\(secretKey)".data(using: .utf8)!)
+        let kRegion = CrossPlatformCrypto.hmacSHA256(data: region.data(using: .utf8)!, key: kDate)
+        let kService = CrossPlatformCrypto.hmacSHA256(data: "s3".data(using: .utf8)!, key: kRegion)
+        let kSigning = CrossPlatformCrypto.hmacSHA256(data: "aws4_request".data(using: .utf8)!, key: kService)
+        return kSigning
     }
 }
